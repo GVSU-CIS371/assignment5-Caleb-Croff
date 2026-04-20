@@ -1,7 +1,7 @@
 <template>
   <div
     class="baseBeverage"
-    :style="{ backgroundColor: beverageStore.currentBase?.color }"
+    :style="{ backgroundColor: beverageStore.selectedBase.color }"
   ></div>
 </template>
 
