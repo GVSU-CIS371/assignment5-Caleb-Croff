@@ -4,10 +4,10 @@
     <Hot v-else />
     <Contents>
       <template v-slot:top>
-        <Creamer v-if="beverageStore.currentCreamer?.color !== 'transparent'" />
+        <Creamer v-if="beverageStore.hasCreamer" />
       </template>
       <template v-slot:mid>
-        <Syrup v-if="beverageStore.currentSyrup?.color !== 'transparent'" />
+        <Syrup v-if="beverageStore.hasSyrup" />
       </template>
       <template v-slot:bottom>
         <Base />
