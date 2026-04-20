@@ -1,8 +1,16 @@
 import { defineStore } from "pinia";
-import bases from "../data/bases.json";
-import creamers from "../data/creamers.json";
-import syrups from "../data/syrups.json";
 import tempretures from "../data/tempretures.json";
+import { db } from "../firebase.ts";
+import {
+  collection,
+  getDocs,
+  setDoc,
+  doc,
+  query,
+  where,
+  onSnapshot,
+} from "firebase/firestore";
+import type { User } from "firebase/auth";
 import type {
   BaseBeverageType,
   BeverageType,
@@ -10,62 +18,31 @@ import type {
   SyrupType,
 } from "../types/beverage";
 
-type BeverageState = {
-  temps: string[];
-  bases: BaseBeverageType[];
-  creamers: CreamerType[];
-  syrups: SyrupType[];
-  beverageName: string;
-  beverages: BeverageType[];
-  currentTemp: string;
-  currentBase: string;
-  currentCreamer: string;
-  currentSyrup: string;
-};
-
-const defaultBase: BaseBeverageType = {
-  id: "",
-  name: "",
-  color: "#6F4E37",
-};
-
-const defaultCreamer: CreamerType = {
-  id: "",
-  name: "",
-  color: "transparent",
-};
-
-const defaultSyrup: SyrupType = {
-  id: "",
-  name: "No Syrup",
-  color: "#c6c6c6",
-};
+let unsubscribeBeverages: (() => void) | null = null;
 
 export const useBeverageStore = defineStore("BeverageStore", {
-  state: (): BeverageState => ({
-    temps: [...tempretures],
-    bases: [...bases],
-    creamers: [...creamers],
-    syrups: [...syrups],
+  state: () => ({
+    temps: [...tempretures] as string[],
+    bases: [] as BaseBeverageType[],
+    creamers: [] as CreamerType[],
+    syrups: [] as SyrupType[],
     beverageName: "",
-    beverages: [],
-    currentTemp: tempretures.find((temp) => temp === "Cold") ?? tempretures[0] ?? "",
-    currentBase: bases.find((base) => base.name === "Coffee")?.id ?? bases[0]?.id ?? "",
-    currentCreamer: creamers[0]?.id ?? "",
-    currentSyrup: syrups[0]?.id ?? "",
+    beverages: [] as BeverageType[],
+    currentTemp: tempretures.find((t) => t === "Cold") ?? tempretures[0] ?? "",
+    currentBase: "" as string,
+    currentCreamer: "" as string,
+    currentSyrup: "" as string,
+    selectedBeverageId: "" as string,
+    user: null as User | null,
   }),
 
   getters: {
     selectedBase: (state): BaseBeverageType =>
-      state.bases.find((base) => base.id === state.currentBase) ?? state.bases[0] ?? defaultBase,
+      state.bases.find((base) => base.id === state.currentBase) ?? state.bases[0] ?? { id: "", name: "", color: "#6F4E37" },
     selectedCreamer: (state): CreamerType =>
-      state.creamers.find((creamer) => creamer.id === state.currentCreamer) ??
-      state.creamers[0] ??
-      defaultCreamer,
+      state.creamers.find((c) => c.id === state.currentCreamer) ?? state.creamers[0] ?? { id: "", name: "", color: "transparent" },
     selectedSyrup: (state): SyrupType =>
-      state.syrups.find((syrup) => syrup.id === state.currentSyrup) ??
-      state.syrups[0] ??
-      defaultSyrup,
+      state.syrups.find((s) => s.id === state.currentSyrup) ?? state.syrups[0] ?? { id: "", name: "No Syrup", color: "#c6c6c6" },
     hasCreamer(): boolean {
       return this.selectedCreamer.color !== "transparent";
     },
@@ -75,10 +52,71 @@ export const useBeverageStore = defineStore("BeverageStore", {
   },
 
   actions: {
-    makeBeverage() {
-      const name = this.beverageName.trim() || `Beverage ${this.beverages.length + 1}`;
+    async init() {
+      const [basesSnap, creamersSnap, syrupsSnap] = await Promise.all([
+        getDocs(collection(db, "bases")),
+        getDocs(collection(db, "creamers")),
+        getDocs(collection(db, "syrups")),
+      ]);
+
+      this.bases = basesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as BaseBeverageType));
+      this.creamers = creamersSnap.docs.map((d) => ({ id: d.id, ...d.data() } as CreamerType));
+      this.syrups = syrupsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as SyrupType));
+
+      this.currentBase = this.bases.find((b) => b.name === "Coffee")?.id ?? this.bases[0]?.id ?? "";
+      this.currentCreamer = this.creamers[0]?.id ?? "";
+      this.currentSyrup = this.syrups[0]?.id ?? "";
+    },
+
+    setUser(user: User | null) {
+      this.user = user;
+
+      if (unsubscribeBeverages) {
+        unsubscribeBeverages();
+        unsubscribeBeverages = null;
+      }
+
+      if (!user) {
+        this.beverages = [];
+        this.selectedBeverageId = "";
+        return;
+      }
+
+      const q = query(collection(db, "beverages"), where("userId", "==", user.uid));
+      unsubscribeBeverages = onSnapshot(q, (snapshot) => {
+        this.beverages = snapshot.docs.map((d) => {
+          const data = d.data();
+          return {
+            id: d.id,
+            name: data.name,
+            temp: data.temp,
+            base: data.base,
+            syrup: data.syrup,
+            creamer: data.creamer,
+          } as BeverageType;
+        });
+
+        const stillExists = this.beverages.some((b) => b.id === this.selectedBeverageId);
+        if (!stillExists) {
+          this.selectedBeverageId = this.beverages[0]?.id ?? "";
+          if (this.selectedBeverageId) this.showBeverage(this.selectedBeverageId);
+        }
+      });
+    },
+
+    async makeBeverage(): Promise<string> {
+      if (!this.user) {
+        return "No user logged in, please sign in first.";
+      }
+
+      if (!this.beverageName.trim() || !this.currentBase || !this.currentCreamer || !this.currentSyrup) {
+        return "Please complete all beverage options and the name before making a beverage.";
+      }
+
+      const id = `beverage-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const name = this.beverageName.trim();
       const beverage: BeverageType = {
-        id: `beverage-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id,
         name,
         temp: this.currentTemp,
         base: this.selectedBase,
@@ -87,14 +125,19 @@ export const useBeverageStore = defineStore("BeverageStore", {
       };
 
       this.beverages.push(beverage);
-      this.showBeverage(beverage.id);
-    },
-    showBeverage(beverageId: string) {
-      const beverage = this.beverages.find((savedBeverage) => savedBeverage.id === beverageId);
+      this.selectedBeverageId = id;
 
-      if (!beverage) {
-        return;
-      }
+      await setDoc(doc(db, "beverages", id), {
+        ...beverage,
+        userId: this.user.uid,
+      });
+
+      return `Beverage ${name} made successfully!`;
+    },
+
+    showBeverage(beverageId: string) {
+      const beverage = this.beverages.find((b) => b.id === beverageId);
+      if (!beverage) return;
 
       this.beverageName = beverage.name;
       this.currentTemp = beverage.temp;
@@ -103,5 +146,4 @@ export const useBeverageStore = defineStore("BeverageStore", {
       this.currentSyrup = beverage.syrup.id;
     },
   },
-  persist: true,
 });
