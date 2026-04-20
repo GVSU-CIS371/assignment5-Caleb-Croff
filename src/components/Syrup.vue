@@ -1,7 +1,7 @@
 <template>
   <div
     class="syrup"
-    :style="{ '--texture-color': beverageStore.currentSyrup?.color }"
+    :style="{ '--texture-color': beverageStore.selectedSyrup.color }"
   ></div>
 </template>
 
